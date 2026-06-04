@@ -1,4 +1,5 @@
 import os
+import json
 import logging
 import random
 import asyncio
@@ -8,22 +9,25 @@ from telegram.error import TelegramError
 
 BOT_TOKEN = os.environ.get("BOT_TOKEN")
 
-REQUIRED_CHANNELS = [
-    "@MaSih_BeNy",
-    "@LoLo_funny2",
-]
-
-REQUIRED_GROUPS = [
-    "@LoLo_funny",
-]
-
+REQUIRED_CHANNELS = ["@MaSih_BeNy", "@LoLo_funny2"]
+REQUIRED_GROUPS = ["@LoLo_funny"]
 PRIVATE_CHANNEL_ID = -1004299938337
 DELETE_AFTER_SECONDS = 30
+ADMIN_IDS = [8678262416]
+DATA_FILE = "videos.json"
 
 logging.basicConfig(format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-video_message_ids = []
+def load_videos():
+    if os.path.exists(DATA_FILE):
+        with open(DATA_FILE, "r") as f:
+            return json.load(f)
+    return []
+
+def save_videos(videos):
+    with open(DATA_FILE, "w") as f:
+        json.dump(videos, f)
 
 async def check_membership(user_id, context):
     not_joined = []
@@ -46,7 +50,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
             keyboard.append([InlineKeyboardButton(f"📢 عضویت در {channel}", url=f"https://t.me/{name}")])
         keyboard.append([InlineKeyboardButton("✅ عضو شدم، بررسی کن", callback_data="check_join")])
         await update.message.reply_text(
-            f"👋 سلام {user.first_name} عزیز!\n\nبرای استفاده از ربات باید تو کانال‌های زیر عضو بشی:\n\nبعد از عضویت دکمه ✅ رو بزن 👇",
+            f"👋 سلام {user.first_name} عزیز!\n\n🔒 برای دسترسی به محتوای ویژه، ابتدا در کانال‌های زیر عضو شو:\n\nبعد از عضویت دکمه ✅ رو بزن 👇",
             reply_markup=InlineKeyboardMarkup(keyboard)
         )
         return
@@ -68,42 +72,47 @@ async def check_join_callback(update: Update, context: ContextTypes.DEFAULT_TYPE
     await send_video(None, context, query.from_user.id)
 
 async def send_video(message, context, user_id):
-    if not video_message_ids:
-        text = "😔 فعلاً فیلمی موجود نیست. بعداً امتحان کن!"
+    videos = load_videos()
+    if not videos:
+        text = "😔 فعلاً فیلمی موجود نیست.\nبعداً دوباره امتحان کن!"
         if message:
             await message.reply_text(text)
         else:
             await context.bot.send_message(chat_id=user_id, text=text)
         return
-    random_msg_id = random.choice(video_message_ids)
+    random_msg_id = random.choice(videos)
     try:
         sent = await context.bot.forward_message(chat_id=user_id, from_chat_id=PRIVATE_CHANNEL_ID, message_id=random_msg_id)
-        await context.bot.send_message(chat_id=user_id, text=f"🎬 فیلمت فرستاده شد!\n⏳ {DELETE_AFTER_SECONDS} ثانیه دیگه پاک میشه، سریع ببین!")
+        await context.bot.send_message(
+            chat_id=user_id,
+            text="🎬 فیلم با موفقیت ارسال شد!\n\n⚠️ توجه: این فیلم پس از ۳۰ ثانیه به صورت خودکار حذف می‌شود.\n\n⏳ همین الان ببین!"
+        )
         await asyncio.sleep(DELETE_AFTER_SECONDS)
         try:
             await context.bot.delete_message(chat_id=user_id, message_id=sent.message_id)
+            await context.bot.send_message(chat_id=user_id, text="🗑 فیلم حذف شد.\n\n🔄 برای دریافت فیلم جدید /start بزن!")
         except:
             pass
     except TelegramError as e:
         logger.error(f"خطا: {e}")
-        await context.bot.send_message(chat_id=user_id, text="❌ خطا! دوباره /start بزن.")
-
-ADMIN_IDS = []
+        await context.bot.send_message(chat_id=user_id, text="❌ خطایی رخ داد!\nدوباره /start بزن.")
 
 async def add_video(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id not in ADMIN_IDS:
         await update.message.reply_text("❌ فقط ادمین!")
         return
+    videos = load_videos()
     if not context.args:
-        await update.message.reply_text(f"📝 استفاده: /addvideo 123\nالان {len(video_message_ids)} فیلم داری")
+        await update.message.reply_text(f"📝 استفاده: /addvideo 123\n\n🎬 الان {len(videos)} فیلم داری")
         return
     try:
         msg_id = int(context.args[0])
-        if msg_id not in video_message_ids:
-            video_message_ids.append(msg_id)
-            await update.message.reply_text(f"✅ اضافه شد! مجموع: {len(video_message_ids)} فیلم")
+        if msg_id not in videos:
+            videos.append(msg_id)
+            save_videos(videos)
+            await update.message.reply_text(f"✅ فیلم اضافه شد!\n🎬 مجموع: {len(videos)} فیلم")
         else:
-            await update.message.reply_text("⚠️ قبلاً اضافه شده!")
+            await update.message.reply_text("⚠️ این فیلم قبلاً اضافه شده!")
     except:
         await update.message.reply_text("❌ آی‌دی باید عدد باشه!")
 
