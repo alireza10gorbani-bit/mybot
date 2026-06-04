@@ -25,6 +25,7 @@ USERS_FILE = "users.json"
 user_cooldowns = {}
 user_last_video = {}
 user_states = {}
+anon_msg_senders = {}
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -135,15 +136,47 @@ async def anon_msg_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
+    msg = update.message.text
+
     if user_states.get(user_id) == "waiting_anon_msg":
         user_states[user_id] = None
-        msg = update.message.text
+        msg_key = f"anon_{user_id}_{int(time.time())}"
         for admin_id in ADMIN_IDS:
-            await context.bot.send_message(
+            sent = await context.bot.send_message(
                 chat_id=admin_id,
-                text=f"✉️ پیام ناشناس:\n\n{msg}"
+                text=f"✉️ پیام ناشناس:\n\n{msg}\n\n📩 برای جواب بزن: /reply {msg_key} جواب شما"
             )
+            anon_msg_senders[msg_key] = user_id
         await update.message.reply_text("✅ پیامت ناشناس فرستاده شد!")
+
+    elif user_states.get(user_id) == "waiting_broadcast":
+        user_states[user_id] = None
+        users = load_users()
+        sent_count = 0
+        failed = 0
+        for uid in users:
+            try:
+                await context.bot.send_message(chat_id=uid, text=msg)
+                sent_count += 1
+            except:
+                failed += 1
+        await update.message.reply_text(f"✅ فرستاده شد به {sent_count} نفر\n❌ {failed} نفر نشد")
+
+async def reply_anon(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id not in ADMIN_IDS:
+        return await update.message.reply_text("❌ فقط ادمین")
+    if len(context.args) < 2:
+        return await update.message.reply_text("استفاده: /reply key جواب شما")
+    key = context.args[0]
+    reply_text = " ".join(context.args[1:])
+    user_id = anon_msg_senders.get(key)
+    if not user_id:
+        return await update.message.reply_text("❌ پیام پیدا نشد!")
+    await context.bot.send_message(
+        chat_id=user_id,
+        text=f"📩 جواب ادمین:\n\n{reply_text}"
+    )
+    await update.message.reply_text("✅ جواب فرستاده شد!")
 
 async def send_video(message, context, user_id):
     videos = load_videos()
@@ -218,19 +251,8 @@ async def remove_video(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id not in ADMIN_IDS:
         return await update.message.reply_text("❌ فقط ادمین")
-    if not context.args:
-        return await update.message.reply_text("استفاده: /broadcast پیام شما")
-    msg = " ".join(context.args)
-    users = load_users()
-    sent = 0
-    failed = 0
-    for user_id in users:
-        try:
-            await context.bot.send_message(chat_id=user_id, text=msg)
-            sent += 1
-        except:
-            failed += 1
-    await update.message.reply_text(f"✅ فرستاده شد به {sent} نفر\n❌ {failed} نفر نشد")
+    user_states[update.effective_user.id] = "waiting_broadcast"
+    await update.message.reply_text("📢 پیامی که میخوای به همه بفرستی رو بنویس 👇")
 
 def main():
     app = Application.builder().token(BOT_TOKEN).build()
@@ -238,6 +260,7 @@ def main():
     app.add_handler(CommandHandler("addvideo", add_video))
     app.add_handler(CommandHandler("removevideo", remove_video))
     app.add_handler(CommandHandler("broadcast", broadcast))
+    app.add_handler(CommandHandler("reply", reply_anon))
     app.add_handler(CallbackQueryHandler(check_join_callback, pattern="check_join"))
     app.add_handler(CallbackQueryHandler(get_video_callback, pattern="get_video"))
     app.add_handler(CallbackQueryHandler(anon_msg_callback, pattern="anon_msg"))
