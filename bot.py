@@ -10,8 +10,10 @@ from telegram.error import TelegramError
 
 BOT_TOKEN = os.environ.get("BOT_TOKEN")
 
-REQUIRED_CHANNELS = ["@MaSih_BeNy", "@LoLo_funny2"]
+# ✅ فقط همینجا تغییر کرد
+REQUIRED_CHANNELS = ["@LoLo_LoLo_Lo_Lo", "@LoLo_funny2"]
 REQUIRED_GROUPS = ["@LoLo_funny"]
+
 PRIVATE_CHANNEL_ID = -1004299938337
 
 COOLDOWN_SECONDS = 15
@@ -119,14 +121,14 @@ async def send_video(message, context, user_id):
             await context.bot.send_message(chat_id=user_id, text=text)
         return
 
-    # 🔥 جلوگیری از تکرار پشت سر هم
+    # جلوگیری از تکرار پشت سر هم
     last = user_last_video.get(user_id)
     choices = [v for v in videos if v != last] or videos
 
     msg_id = random.choice(choices)
     user_last_video[user_id] = msg_id
 
-    # 🔒 کول‌داون شروع
+    # کول‌داون
     set_cooldown(user_id)
 
     try:
