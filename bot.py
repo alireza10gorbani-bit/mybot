@@ -14,17 +14,20 @@ REQUIRED_CHANNELS = ["@MaSih_BeNy", "@LoLo_funny2"]
 REQUIRED_GROUPS = ["@LoLo_funny"]
 PRIVATE_CHANNEL_ID = -1004299938337
 
-DELETE_AFTER_SECONDS = 15
 COOLDOWN_SECONDS = 15
+DELETE_AFTER_SECONDS = 15
 
 ADMIN_IDS = [8678262416]
 DATA_FILE = "videos.json"
 
+# user state
 user_cooldowns = {}
+user_last_video = {}
 
-logging.basicConfig(format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO)
+logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
+# ================= DATA =================
 def load_videos():
     if os.path.exists(DATA_FILE):
         with open(DATA_FILE, "r") as f:
@@ -35,9 +38,14 @@ def save_videos(videos):
     with open(DATA_FILE, "w") as f:
         json.dump(videos, f)
 
+# ================= COOLDOWN =================
 def get_remaining(user_id):
     return max(0, int(user_cooldowns.get(user_id, 0) - time.time()))
 
+def set_cooldown(user_id):
+    user_cooldowns[user_id] = time.time() + COOLDOWN_SECONDS
+
+# ================= CHECK =================
 async def check_membership(user_id, context):
     not_joined = []
     for channel in REQUIRED_CHANNELS + REQUIRED_GROUPS:
@@ -49,54 +57,57 @@ async def check_membership(user_id, context):
             not_joined.append(channel)
     return not_joined
 
+def build_keyboard(not_joined):
+    keyboard = [
+        [InlineKeyboardButton(f"📢 عضویت در {c}", url=f"https://t.me/{c.replace('@','')}")]
+        for c in not_joined
+    ]
+    keyboard.append([InlineKeyboardButton("✅ عضو شدم", callback_data="check_join")])
+    return InlineKeyboardMarkup(keyboard)
+
+# ================= START =================
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
 
     remaining = get_remaining(user.id)
     if remaining > 0:
-        await update.message.reply_text(f"⏳ {remaining} ثانیه دیگه می‌تونی فیلم بعدی رو بگیری!")
+        await update.message.reply_text(f"⏳ {remaining} ثانیه دیگه صبر کن")
         return
 
     not_joined = await check_membership(user.id, context)
     if not_joined:
-        keyboard = []
-        for channel in not_joined:
-            name = channel.replace("@", "")
-            keyboard.append([InlineKeyboardButton(f"📢 عضویت در {channel}", url=f"https://t.me/{name}")])
-        keyboard.append([InlineKeyboardButton("✅ عضو شدم، بررسی کن", callback_data="check_join")])
-
         await update.message.reply_text(
-            "👋 سلام!\n🔒 اول عضو کانال‌ها شو بعد فیلم بگیر 👇",
-            reply_markup=InlineKeyboardMarkup(keyboard)
+            "🔒 اول عضو کانال‌ها شو 👇",
+            reply_markup=build_keyboard(not_joined)
         )
         return
 
     await send_video(update.message, context, user.id)
 
+# ================= CALLBACK =================
 async def check_join_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
 
-    remaining = get_remaining(query.from_user.id)
+    user_id = query.from_user.id
+
+    remaining = get_remaining(user_id)
     if remaining > 0:
-        await query.edit_message_text(f"⏳ {remaining} ثانیه دیگه می‌تونی فیلم بعدی رو بگیری!")
+        await query.edit_message_text(f"⏳ {remaining} ثانیه دیگه صبر کن")
         return
 
-    not_joined = await check_membership(query.from_user.id, context)
+    not_joined = await check_membership(user_id, context)
     if not_joined:
-        keyboard = []
-        for channel in not_joined:
-            name = channel.replace("@", "")
-            keyboard.append([InlineKeyboardButton(f"📢 عضویت در {channel}", url=f"https://t.me/{name}")])
-        keyboard.append([InlineKeyboardButton("✅ عضو شدم، بررسی کن", callback_data="check_join")])
-
-        await query.edit_message_text("❌ هنوز عضو همه کانال‌ها نشدی 👇", reply_markup=InlineKeyboardMarkup(keyboard))
+        await query.edit_message_text(
+            "❌ هنوز عضو همه کانال‌ها نشدی 👇",
+            reply_markup=build_keyboard(not_joined)
+        )
         return
 
-    await query.edit_message_text("⏳ ۱۵ ثانیه صبر کن...")
+    await query.edit_message_text("🎬 در حال ارسال فیلم...")
+    await send_video(None, context, user_id)
 
-    await send_video(None, context, query.from_user.id)
-
+# ================= SEND VIDEO =================
 async def send_video(message, context, user_id):
     videos = load_videos()
 
@@ -108,84 +119,86 @@ async def send_video(message, context, user_id):
             await context.bot.send_message(chat_id=user_id, text=text)
         return
 
-    msg_id = random.choice(videos)
+    # 🔥 جلوگیری از تکرار پشت سر هم
+    last = user_last_video.get(user_id)
+    choices = [v for v in videos if v != last] or videos
 
-    user_cooldowns[user_id] = time.time() + COOLDOWN_SECONDS
+    msg_id = random.choice(choices)
+    user_last_video[user_id] = msg_id
 
-    async def job():
-        await asyncio.sleep(COOLDOWN_SECONDS)
+    # 🔒 کول‌داون شروع
+    set_cooldown(user_id)
 
-        try:
-            sent = await context.bot.forward_message(
-                chat_id=user_id,
-                from_chat_id=PRIVATE_CHANNEL_ID,
-                message_id=msg_id
-            )
+    try:
+        sent = await context.bot.forward_message(
+            chat_id=user_id,
+            from_chat_id=PRIVATE_CHANNEL_ID,
+            message_id=msg_id
+        )
 
-            await context.bot.send_message(
-                chat_id=user_id,
-                text="🎬 فیلم ارسال شد!\n⏳ بعد از ۱۵ ثانیه حذف میشه"
-            )
+        await context.bot.send_message(
+            chat_id=user_id,
+            text="🎬 فیلم ارسال شد!\n⏳ بعد از ۱۵ ثانیه حذف میشه"
+        )
 
+        async def delete_later():
             await asyncio.sleep(DELETE_AFTER_SECONDS)
-
             try:
-                await context.bot.delete_message(chat_id=user_id, message_id=sent.message_id)
+                await context.bot.delete_message(
+                    chat_id=user_id,
+                    message_id=sent.message_id
+                )
             except:
                 pass
 
-            await context.bot.send_message(chat_id=user_id, text="🗑 فیلم حذف شد\n/start")
+        asyncio.create_task(delete_later())
 
-        except TelegramError as e:
-            logger.error(e)
-            await context.bot.send_message(chat_id=user_id, text="❌ خطا! دوباره /start")
+    except TelegramError as e:
+        logger.error(e)
+        await context.bot.send_message(chat_id=user_id, text="❌ خطا دوباره /start")
 
-    asyncio.create_task(job())
-
+# ================= ADMIN =================
 async def add_video(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id not in ADMIN_IDS:
-        await update.message.reply_text("❌ فقط ادمین!")
-        return
+        return await update.message.reply_text("❌ فقط ادمین")
 
     videos = load_videos()
 
     if not context.args:
-        await update.message.reply_text(f"استفاده: /addvideo 123\nکل: {len(videos)}")
-        return
+        return await update.message.reply_text("استفاده: /addvideo 123")
 
     try:
-        msg_id = int(context.args[0])
-        if msg_id not in videos:
-            videos.append(msg_id)
+        vid = int(context.args[0])
+        if vid not in videos:
+            videos.append(vid)
             save_videos(videos)
             await update.message.reply_text("✅ اضافه شد")
         else:
-            await update.message.reply_text("⚠️ قبلاً اضافه شده")
+            await update.message.reply_text("⚠️ قبلاً هست")
     except:
-        await update.message.reply_text("❌ فقط عدد!")
+        await update.message.reply_text("❌ فقط عدد")
 
 async def remove_video(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id not in ADMIN_IDS:
-        await update.message.reply_text("❌ فقط ادمین!")
-        return
+        return await update.message.reply_text("❌ فقط ادمین")
 
     videos = load_videos()
 
     if not context.args:
-        await update.message.reply_text("استفاده: /removevideo 123")
-        return
+        return await update.message.reply_text("استفاده: /removevideo 123")
 
     try:
-        msg_id = int(context.args[0])
-        if msg_id in videos:
-            videos.remove(msg_id)
+        vid = int(context.args[0])
+        if vid in videos:
+            videos.remove(vid)
             save_videos(videos)
             await update.message.reply_text("🗑 حذف شد")
         else:
             await update.message.reply_text("⚠️ پیدا نشد")
     except:
-        await update.message.reply_text("❌ فقط عدد!")
+        await update.message.reply_text("❌ فقط عدد")
 
+# ================= MAIN =================
 def main():
     app = Application.builder().token(BOT_TOKEN).build()
 
@@ -194,7 +207,7 @@ def main():
     app.add_handler(CommandHandler("removevideo", remove_video))
     app.add_handler(CallbackQueryHandler(check_join_callback, pattern="check_join"))
 
-    print("Bot started...")
+    print("Bot running...")
     app.run_polling()
 
 if __name__ == "__main__":
