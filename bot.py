@@ -12,7 +12,7 @@ BOT_TOKEN = os.environ.get("BOT_TOKEN")
 REQUIRED_CHANNELS = ["@MaSih_BeNy", "@LoLo_funny2"]
 REQUIRED_GROUPS = ["@LoLo_funny"]
 PRIVATE_CHANNEL_ID = -1004299938337
-DELETE_AFTER_SECONDS = 30
+DELETE_AFTER_SECONDS = 60
 ADMIN_IDS = [8678262416]
 DATA_FILE = "videos.json"
 
@@ -85,14 +85,14 @@ async def send_video(message, context, user_id):
         sent = await context.bot.forward_message(chat_id=user_id, from_chat_id=PRIVATE_CHANNEL_ID, message_id=random_msg_id)
         await context.bot.send_message(
             chat_id=user_id,
-            text="🎬 فیلم با موفقیت ارسال شد!\n\n⚠️ توجه: این فیلم پس از ۳۰ ثانیه به صورت خودکار حذف می‌شود.\n\n⏳ همین الان ببین!"
+            text="🎬 فیلم با موفقیت ارسال شد!\n\n⚠️ این فیلم پس از ۶۰ ثانیه حذف میشه!\n\n⏳ همین الان ببین!"
         )
         await asyncio.sleep(DELETE_AFTER_SECONDS)
         try:
             await context.bot.delete_message(chat_id=user_id, message_id=sent.message_id)
-            await context.bot.send_message(chat_id=user_id, text="🗑 فیلم حذف شد.\n\n🔄 برای دریافت فیلم جدید /start بزن!")
         except:
             pass
+        await context.bot.send_message(chat_id=user_id, text="🗑 فیلم حذف شد.\n\n🔄 برای دریافت فیلم بعدی /start بزن!")
     except TelegramError as e:
         logger.error(f"خطا: {e}")
         await context.bot.send_message(chat_id=user_id, text="❌ خطایی رخ داد!\nدوباره /start بزن.")
@@ -103,7 +103,7 @@ async def add_video(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     videos = load_videos()
     if not context.args:
-        await update.message.reply_text(f"📝 استفاده: /addvideo 123\n\n🎬 الان {len(videos)} فیلم داری")
+        await update.message.reply_text(f"📝 استفاده: /addvideo 123\n\n🎬 الان {len(videos)} فیلم داری:\n" + "\n".join([str(v) for v in videos]))
         return
     try:
         msg_id = int(context.args[0])
@@ -116,10 +116,30 @@ async def add_video(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except:
         await update.message.reply_text("❌ آی‌دی باید عدد باشه!")
 
+async def remove_video(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id not in ADMIN_IDS:
+        await update.message.reply_text("❌ فقط ادمین!")
+        return
+    videos = load_videos()
+    if not context.args:
+        await update.message.reply_text(f"📝 استفاده: /removevideo 123\n\n🎬 فیلم‌های موجود:\n" + "\n".join([str(v) for v in videos]))
+        return
+    try:
+        msg_id = int(context.args[0])
+        if msg_id in videos:
+            videos.remove(msg_id)
+            save_videos(videos)
+            await update.message.reply_text(f"✅ فیلم حذف شد!\n🎬 مجموع: {len(videos)} فیلم")
+        else:
+            await update.message.reply_text("⚠️ این فیلم پیدا نشد!")
+    except:
+        await update.message.reply_text("❌ آی‌دی باید عدد باشه!")
+
 def main():
     app = Application.builder().token(BOT_TOKEN).build()
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("addvideo", add_video))
+    app.add_handler(CommandHandler("removevideo", remove_video))
     app.add_handler(CallbackQueryHandler(check_join_callback, pattern="check_join"))
     print("✅ ربات شروع کرد!")
     app.run_polling(allowed_updates=Update.ALL_TYPES)
