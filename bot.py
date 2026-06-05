@@ -277,24 +277,6 @@ async def broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_states[update.effective_user.id] = "waiting_broadcast"
     await update.message.reply_text("📢 پیامی که میخوای به همه بفرستی رو بنویس 👇")
 
-# ✅ تابع جدید - فوروارد کردن پیام از کانال
-async def add_video_forward(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.effective_user.id not in ADMIN_IDS:
-        return
-    if update.message.forward_origin:
-        origin = update.message.forward_origin
-        if hasattr(origin, 'chat') and origin.chat.id == PRIVATE_CHANNEL_ID:
-            msg_id = origin.message_id
-            videos = load_videos()
-            if msg_id not in videos:
-                videos.append(msg_id)
-                save_videos(videos)
-                await update.message.reply_text(f"✅ فیلم با ID {msg_id} اضافه شد!\n🎬 مجموع: {len(videos)} فیلم")
-            else:
-                await update.message.reply_text(f"⚠️ این فیلم (ID: {msg_id}) قبلاً هست")
-        else:
-            await update.message.reply_text("❌ فقط از کانال خصوصی فوروارد کن!")
-
 def main():
     app = Application.builder().token(BOT_TOKEN).build()
     app.add_handler(CommandHandler("start", start))
@@ -306,9 +288,7 @@ def main():
     app.add_handler(CallbackQueryHandler(check_join_callback, pattern="check_join"))
     app.add_handler(CallbackQueryHandler(get_video_callback, pattern="get_video"))
     app.add_handler(CallbackQueryHandler(anon_msg_callback, pattern="anon_msg"))
-    # ✅ هندلر فوروارد - باید قبل از هندلر متن باشه
-    app.add_handler(MessageHandler(filters.FORWARDED & ~filters.COMMAND, add_video_forward))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND & ~filters.FORWARDED, handle_message))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     print("Bot running...")
     app.run_polling()
 
