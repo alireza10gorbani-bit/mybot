@@ -142,7 +142,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         user_states[user_id] = None
         msg_key = f"anon_{user_id}_{int(time.time())}"
         for admin_id in ADMIN_IDS:
-            sent = await context.bot.send_message(
+            await context.bot.send_message(
                 chat_id=admin_id,
                 text=f"✉️ پیام ناشناس:\n\n{msg}\n\n📩 برای جواب بزن: /reply {msg_key} جواب شما"
             )
@@ -172,10 +172,7 @@ async def reply_anon(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = anon_msg_senders.get(key)
     if not user_id:
         return await update.message.reply_text("❌ پیام پیدا نشد!")
-    await context.bot.send_message(
-        chat_id=user_id,
-        text=f"📩 جواب ادمین:\n\n{reply_text}"
-    )
+    await context.bot.send_message(chat_id=user_id, text=f"📩 جواب ادمین:\n\n{reply_text}")
     await update.message.reply_text("✅ جواب فرستاده شد!")
 
 async def send_video(message, context, user_id):
@@ -231,6 +228,30 @@ async def add_video(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except:
         await update.message.reply_text("❌ فقط عدد")
 
+async def add_videos_bulk(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id not in ADMIN_IDS:
+        return await update.message.reply_text("❌ فقط ادمین")
+    if not context.args:
+        return await update.message.reply_text("استفاده: /addvideos 7 8 9 10")
+    videos = load_videos()
+    added = []
+    exists = []
+    for arg in context.args:
+        try:
+            vid = int(arg)
+            if vid not in videos:
+                videos.append(vid)
+                added.append(vid)
+            else:
+                exists.append(vid)
+        except:
+            pass
+    save_videos(videos)
+    text = f"✅ اضافه شد: {added}\n🎬 مجموع: {len(videos)} فیلم"
+    if exists:
+        text += f"\n⚠️ قبلاً بود: {exists}"
+    await update.message.reply_text(text)
+
 async def remove_video(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id not in ADMIN_IDS:
         return await update.message.reply_text("❌ فقط ادمین")
@@ -258,6 +279,7 @@ def main():
     app = Application.builder().token(BOT_TOKEN).build()
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("addvideo", add_video))
+    app.add_handler(CommandHandler("addvideos", add_videos_bulk))
     app.add_handler(CommandHandler("removevideo", remove_video))
     app.add_handler(CommandHandler("broadcast", broadcast))
     app.add_handler(CommandHandler("reply", reply_anon))
