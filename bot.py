@@ -136,17 +136,19 @@ async def anon_msg_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
+    user = update.effective_user
     msg = update.message.text
 
     if user_states.get(user_id) == "waiting_anon_msg":
         user_states[user_id] = None
         msg_key = f"anon_{user_id}_{int(time.time())}"
+        anon_msg_senders[msg_key] = user_id
+        username = f"@{user.username}" if user.username else "بدون یوزرنیم"
         for admin_id in ADMIN_IDS:
             await context.bot.send_message(
                 chat_id=admin_id,
-                text=f"✉️ پیام ناشناس:\n\n{msg}\n\n📩 برای جواب بزن: /reply {msg_key} جواب شما"
+                text=f"✉️ پیام ناشناس:\n\n{msg}\n\n━━━━━━━━━━\n👤 اسم: {user.first_name}\n🆔 یوزرنیم: {username}\n🔢 آیدی عددی: {user_id}\n━━━━━━━━━━\n📩 برای جواب: /reply {msg_key} جواب شما"
             )
-            anon_msg_senders[msg_key] = user_id
         await update.message.reply_text("✅ پیامت ناشناس فرستاده شد!")
 
     elif user_states.get(user_id) == "waiting_broadcast":
