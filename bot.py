@@ -1,79 +1,28 @@
-import os
-import json
-import logging
-import random
 import asyncio
-import time
+import logging
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, MessageHandler, filters, ContextTypes
 from telegram.error import TelegramError
+import os
 
 BOT_TOKEN = os.environ.get("BOT_TOKEN")
 
-REQUIRED_CHANNELS = ["@LoLo_LoLo_Lo_Lo", "@LoLo_funny2"]
-REQUIRED_GROUPS = ["@LoLo_funny"]
-
-PRIVATE_CHANNEL_ID = -1004299938337
-ADULT_CHANNEL_ID = -1003826563552
-
-COOLDOWN_SECONDS = 15
-DELETE_AFTER_SECONDS = 15
-
-ADMIN_IDS = [8678262416]
-DATA_FILE = "videos.json"
-ADULT_DATA_FILE = "adult_videos.json"
-USERS_FILE = "users.json"
-
-user_cooldowns = {}
-user_last_video = {}
-user_states = {}
-anon_msg_senders = {}  # key -> {"user_id": int, "admin_msg_id": int, "admin_chat_id": int}
+ADMIN_ID = 8678262416
+REQUIRED_CHANNELS = ["@LoLo_LoLo_Lo_Lo", "@LoLo_funny2", "@LoLo_funny"]
+CHANNEL_1 = -1004299938337
+CHANNEL_2 = -1003826563552
+PUBLIC_CHANNEL = "https://t.me/LoLo_funny2"
+DELETE_AFTER_SECONDS = 8
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-def load_videos():
-    if os.path.exists(DATA_FILE):
-        with open(DATA_FILE, "r") as f:
-            return json.load(f)
-    return []
-
-def save_videos(videos):
-    with open(DATA_FILE, "w") as f:
-        json.dump(videos, f)
-
-def load_adult_videos():
-    if os.path.exists(ADULT_DATA_FILE):
-        with open(ADULT_DATA_FILE, "r") as f:
-            return json.load(f)
-    return []
-
-def save_adult_videos(videos):
-    with open(ADULT_DATA_FILE, "w") as f:
-        json.dump(videos, f)
-
-def load_users():
-    if os.path.exists(USERS_FILE):
-        with open(USERS_FILE, "r") as f:
-            return json.load(f)
-    return []
-
-def save_user(user_id):
-    users = load_users()
-    if user_id not in users:
-        users.append(user_id)
-        with open(USERS_FILE, "w") as f:
-            json.dump(users, f)
-
-def get_remaining(user_id):
-    return max(0, int(user_cooldowns.get(user_id, 0) - time.time()))
-
-def set_cooldown(user_id):
-    user_cooldowns[user_id] = time.time() + COOLDOWN_SECONDS
+# نگه داشتن state ادمین
+admin_state = {}  # ADMIN_ID -> {"step": ..., "channel": ...}
 
 async def check_membership(user_id, context):
     not_joined = []
-    for channel in REQUIRED_CHANNELS + REQUIRED_GROUPS:
+    for channel in REQUIRED_CHANNELS:
         try:
             member = await context.bot.get_chat_member(channel, user_id)
             if member.status in ["left", "kicked", "banned"]:
@@ -82,34 +31,50 @@ async def check_membership(user_id, context):
             not_joined.append(channel)
     return not_joined
 
-def build_join_keyboard(not_joined):
+def build_join_keyboard(not_joined, msg_id=None):
     keyboard = [
-        [InlineKeyboardButton(f"📢 عضویت در {c}", url=f"https://t.me/{c.replace('@','')}")]
+        [InlineKeyboardButton(f"📢 عضویت در {c}", url=f"https://t.me/{c.replace('@', '')}")]
         for c in not_joined
     ]
-    keyboard.append([InlineKeyboardButton("✅ عضو شدم", callback_data="check_join")])
+    callback = f"checkjoin_{msg_id}" if msg_id else "checkjoin"
+    keyboard.append([InlineKeyboardButton("✅ عضو شدم", callback_data=callback)])
     return InlineKeyboardMarkup(keyboard)
 
 def build_main_keyboard():
     keyboard = [
-        [
-            InlineKeyboardButton("😈 آزاردهنده", callback_data="get_video"),
-            InlineKeyboardButton("🔞 بزرگسالان", callback_data="get_adult_video")
-        ],
-        [InlineKeyboardButton("✉️ پیام ناشناس به ادمین", callback_data="anon_msg")]
+        [InlineKeyboardButton("📢 استارت", url=PUBLIC_CHANNEL)],
+        [InlineKeyboardButton("🎧 پشتیبانی", callback_data="support")]
     ]
     return InlineKeyboardMarkup(keyboard)
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
-    save_user(user.id)
+    args = context.args
+
+    # اومده از دکمه مشاهده کانال
+    if args and args[0].startswith("film_"):
+        parts = args[0].split("_")
+        channel_id = int(parts[1])
+        msg_id = int(parts[2])
+        not_joined = await check_membership(user.id, context)
+        if not_joined:
+            await update.message.reply_text(
+                "🔒 برای دیدن محتوا اول عضو کانال‌ها شو 👇",
+                reply_markup=build_join_keyboard(not_joined, f"{channel_id}_{msg_id}")
+            )
+            return
+        await send_film(context, user.id, channel_id, msg_id)
+        return
+
+    # استارت معمولی
     not_joined = await check_membership(user.id, context)
     if not_joined:
         await update.message.reply_text(
-            "🔒 اول عضو کانال‌ها شو 👇",
+            "🔒 برای استفاده از ربات اول عضو کانال‌ها شو 👇",
             reply_markup=build_join_keyboard(not_joined)
         )
         return
+
     await update.message.reply_text(
         f"👋 سلام {user.first_name} عزیز!\n\nیه گزینه انتخاب کن 👇",
         reply_markup=build_main_keyboard()
@@ -119,319 +84,216 @@ async def check_join_callback(update: Update, context: ContextTypes.DEFAULT_TYPE
     query = update.callback_query
     await query.answer()
     user_id = query.from_user.id
+    data = query.data  # checkjoin یا checkjoin_CHANNELID_MSGID
+
+    parts = data.split("_")
+    film_info = f"{parts[1]}_{parts[2]}" if len(parts) > 2 else None
+
     not_joined = await check_membership(user_id, context)
     if not_joined:
         await query.edit_message_text(
             "❌ هنوز عضو همه کانال‌ها نشدی 👇",
-            reply_markup=build_join_keyboard(not_joined)
+            reply_markup=build_join_keyboard(not_joined, film_info)
         )
         return
+
+    if film_info:
+        await query.edit_message_text("✅ عضویت تایید شد! در حال ارسال...")
+        channel_id = int(film_info.split("_")[0])
+        msg_id = int(film_info.split("_")[1])
+        await send_film(context, user_id, channel_id, msg_id)
+    else:
+        await query.edit_message_text(
+            f"👋 سلام {query.from_user.first_name} عزیز!\n\nیه گزینه انتخاب کن 👇",
+            reply_markup=build_main_keyboard()
+        )
+
+async def support_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+    user_id = query.from_user.id
+
+    # ذخیره state کاربر
+    context.user_data["waiting_support"] = True
+
     await query.edit_message_text(
-        f"👋 سلام {query.from_user.first_name} عزیز!\n\nیه گزینه انتخاب کن 👇",
-        reply_markup=build_main_keyboard()
+        "🎧 پیامت رو بنویس، به ادمین میفرستم 👇"
     )
 
-async def get_video_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-    user_id = query.from_user.id
-    remaining = get_remaining(user_id)
-    if remaining > 0:
-        await query.edit_message_text(f"⏳ {remaining} ثانیه دیگه صبر کن")
-        return
-    await query.edit_message_text("😈 در حال ارسال...")
-    await send_video(None, context, user_id, adult=False)
-
-async def get_adult_video_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-    user_id = query.from_user.id
-    remaining = get_remaining(user_id)
-    if remaining > 0:
-        await query.edit_message_text(f"⏳ {remaining} ثانیه دیگه صبر کن")
-        return
-    await query.edit_message_text("🔞 در حال ارسال...")
-    await send_video(None, context, user_id, adult=True)
-
-async def anon_msg_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-    user_id = query.from_user.id
-    user_states[user_id] = "waiting_anon_msg"
-    await query.edit_message_text("✉️ پیامت رو بنویس، ناشناس برای ادمین میفرستم 👇")
-
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.effective_user.id
     user = update.effective_user
+    user_id = user.id
     msg = update.message.text
 
-    if user_states.get(user_id) == "waiting_anon_msg":
-        user_states[user_id] = None
-        msg_key = f"anon_{user_id}_{int(time.time())}"
-        username = f"@{user.username}" if user.username else "بدون یوزرنیم"
-
-        for admin_id in ADMIN_IDS:
-            try:
-                sent = await context.bot.send_message(
-                    chat_id=admin_id,
-                    text=(
-                        f"✉️ پیام ناشناس:\n\n"
-                        f"{msg}\n\n"
-                        f"━━━━━━━━━━\n"
-                        f"👤 اسم: {user.first_name}\n"
-                        f"🆔 یوزرنیم: {username}\n"
-                        f"🔢 آیدی عددی: {user_id}\n"
-                        f"━━━━━━━━━━\n"
-                        f"📩 برای جواب، روی این پیام ریپلای بزن"
-                    )
+    # پیام پشتیبانی از کاربر
+    if context.user_data.get("waiting_support"):
+        context.user_data["waiting_support"] = False
+        username = f"@{user.username}" if user.username else "ندارد"
+        try:
+            await context.bot.send_message(
+                chat_id=ADMIN_ID,
+                text=(
+                    f"🎧 پیام پشتیبانی:\n\n"
+                    f"{msg}\n\n"
+                    f"━━━━━━━━━━\n"
+                    f"👤 اسم: {user.first_name}\n"
+                    f"🆔 یوزرنیم: {username}\n"
+                    f"🔢 آیدی: {user_id}\n"
+                    f"━━━━━━━━━━\n"
+                    f"📩 برای جواب روی این پیام ریپلای بزن"
                 )
-                # Store the admin message info so reply handler can find the sender
-                anon_msg_senders[msg_key] = {
-                    "user_id": user_id,
-                    "admin_msg_id": sent.message_id,
-                    "admin_chat_id": admin_id
-                }
-                # Map admin_msg_id to msg_key for quick reply lookup
-                reply_map_key = f"{admin_id}_{sent.message_id}"
-                anon_msg_senders[reply_map_key] = msg_key
-            except TelegramError as e:
-                logger.error(f"Failed to send anon msg to admin {admin_id}: {e}")
+            )
+            await update.message.reply_text("✅ پیامت فرستاده شد، به زودی جواب میگیری!")
+        except TelegramError as e:
+            logger.error(e)
+        return
 
-        await update.message.reply_text("✅ پیامت ناشناس فرستاده شد!")
-
-    elif user_states.get(user_id) == "waiting_broadcast":
-        user_states[user_id] = None
-        users = load_users()
-        sent_count = 0
-        failed = 0
-        for uid in users:
-            try:
-                await context.bot.send_message(chat_id=uid, text=msg)
-                sent_count += 1
-            except:
-                failed += 1
-        await update.message.reply_text(f"✅ فرستاده شد به {sent_count} نفر\n❌ {failed} نفر نشد")
-
-    elif user_id in ADMIN_IDS and update.message.reply_to_message:
-        # Admin replied to an anon message directly in Telegram
-        replied_msg_id = update.message.reply_to_message.message_id
-        reply_map_key = f"{user_id}_{replied_msg_id}"
-        msg_key = anon_msg_senders.get(reply_map_key)
-
-        if msg_key and isinstance(anon_msg_senders.get(msg_key), dict):
-            sender_user_id = anon_msg_senders[msg_key]["user_id"]
+    # ادمین ریپلای زد به پیام پشتیبانی
+    if user_id == ADMIN_ID and update.message.reply_to_message:
+        replied_text = update.message.reply_to_message.text or ""
+        target_id = None
+        for line in replied_text.split("\n"):
+            if "آیدی:" in line:
+                try:
+                    target_id = int(line.split(":")[1].strip())
+                except:
+                    pass
+        if target_id:
             try:
                 await context.bot.send_message(
-                    chat_id=sender_user_id,
-                    text=f"📩 جواب ادمین:\n\n{msg}"
+                    chat_id=target_id,
+                    text=f"📩 جواب پشتیبانی:\n\n{msg}"
                 )
                 await update.message.reply_text("✅ جواب فرستاده شد!")
             except TelegramError as e:
-                await update.message.reply_text(f"❌ ارسال نشد: {e}")
-
-async def reply_anon(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.effective_user.id not in ADMIN_IDS:
-        return await update.message.reply_text("❌ فقط ادمین")
-    if len(context.args) < 2:
-        return await update.message.reply_text("استفاده: /reply key جواب شما")
-    key = context.args[0]
-    reply_text = " ".join(context.args[1:])
-    entry = anon_msg_senders.get(key)
-    user_id = entry["user_id"] if isinstance(entry, dict) else entry
-    if not user_id:
-        return await update.message.reply_text("❌ پیام پیدا نشد!")
-    await context.bot.send_message(chat_id=user_id, text=f"📩 جواب ادمین:\n\n{reply_text}")
-    await update.message.reply_text("✅ جواب فرستاده شد!")
-
-async def send_video(message, context, user_id, adult=False):
-    videos = load_adult_videos() if adult else load_videos()
-    channel_id = ADULT_CHANNEL_ID if adult else PRIVATE_CHANNEL_ID
-    label = "🔞" if adult else "😈"
-
-    if not videos:
-        text = "😔 فعلاً محتوایی موجود نیست!"
-        if message:
-            await message.reply_text(text)
-        else:
-            await context.bot.send_message(chat_id=user_id, text=text)
+                await update.message.reply_text(f"❌ خطا: {e}")
         return
 
-    last_key = f"{'adult_' if adult else ''}{user_id}"
-    last = user_last_video.get(last_key)
-    choices = [v for v in videos if v != last] or videos
-    msg_id = random.choice(choices)
-    user_last_video[last_key] = msg_id
-    set_cooldown(user_id)
+    # ادمین فیلم فوروارد کرد
+    if user_id == ADMIN_ID:
+        if update.message.video or update.message.photo or update.message.document or update.message.forward_origin:
+            admin_state[ADMIN_ID] = {
+                "step": "waiting_channel",
+                "message_id": update.message.message_id,
+                "chat_id": update.message.chat_id
+            }
+            keyboard = [
+                [InlineKeyboardButton("📁 کانال اول", callback_data="adminchan_1")],
+                [InlineKeyboardButton("📁 کانال دوم", callback_data="adminchan_2")]
+            ]
+            await update.message.reply_text(
+                "از کدوم کانال خصوصی بفرسته؟",
+                reply_markup=InlineKeyboardMarkup(keyboard)
+            )
 
+async def admin_channel_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.callback_query
+    await query.answer()
+
+    if query.from_user.id != ADMIN_ID:
+        return
+
+    channel_id = CHANNEL_1 if query.data == "adminchan_1" else CHANNEL_2
+    stored = admin_state.get(ADMIN_ID)
+
+    if not stored:
+        await query.edit_message_text("❌ فیلم پیدا نشد، دوباره بفرست.")
+        return
+
+    admin_state[ADMIN_ID]["channel_id"] = channel_id
+    admin_state[ADMIN_ID]["step"] = "waiting_caption"
+
+    await query.edit_message_text(
+        "✅ کانال انتخاب شد!\n\nحالا متن پست رو بنویس 👇"
+    )
+
+async def handle_admin_caption(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    if user_id != ADMIN_ID:
+        return
+
+    stored = admin_state.get(ADMIN_ID)
+    if not stored or stored.get("step") != "waiting_caption":
+        return
+
+    caption_text = update.message.text
+
+    try:
+        # فوروارد به کانال خصوصی
+        forwarded = await context.bot.forward_message(
+            chat_id=stored["channel_id"],
+            from_chat_id=stored["chat_id"],
+            message_id=stored["message_id"]
+        )
+        film_msg_id = forwarded.message_id
+        channel_num = 1 if stored["channel_id"] == CHANNEL_1 else 2
+
+        bot_username = (await context.bot.get_me()).username
+        view_url = f"https://t.me/{bot_username}?start=film_{stored['channel_id']}_{film_msg_id}"
+
+        keyboard = [[InlineKeyboardButton("مشاهده 👁", url=view_url)]]
+
+        await context.bot.send_message(
+            chat_id="@LoLo_funny2",
+            text=caption_text,
+            reply_markup=InlineKeyboardMarkup(keyboard)
+        )
+
+        del admin_state[ADMIN_ID]
+        await update.message.reply_text("✅ پست با موفقیت توی کانال گذاشته شد!")
+
+    except TelegramError as e:
+        logger.error(f"خطا: {e}")
+        await update.message.reply_text(f"❌ خطا: {e}")
+
+async def send_film(context, user_id, channel_id, msg_id):
     try:
         sent = await context.bot.forward_message(
             chat_id=user_id,
             from_chat_id=channel_id,
             message_id=msg_id
         )
-        await context.bot.send_message(
+        notice = await context.bot.send_message(
             chat_id=user_id,
-            text=f"{label} ارسال شد!\n⏳ بعد از ۱۵ ثانیه حذف میشه"
+            text=f"⏳ این محتوا بعد از {DELETE_AFTER_SECONDS} ثانیه حذف میشه!"
         )
 
         async def delete_later():
             await asyncio.sleep(DELETE_AFTER_SECONDS)
             try:
                 await context.bot.delete_message(chat_id=user_id, message_id=sent.message_id)
+                await context.bot.delete_message(chat_id=user_id, message_id=notice.message_id)
                 await context.bot.send_message(
                     chat_id=user_id,
-                    text="🗑 حذف شد.\n\n🔄 برای محتوای بعدی /start بزن!"
+                    text=f"🗑 حذف شد.\n\n📢 برای محتوای بیشتر:\n{PUBLIC_CHANNEL}"
                 )
             except:
                 pass
 
         asyncio.create_task(delete_later())
+
     except TelegramError as e:
-        logger.error(e)
-        await context.bot.send_message(chat_id=user_id, text="❌ خطا دوباره /start")
-
-async def add_video(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.effective_user.id not in ADMIN_IDS:
-        return await update.message.reply_text("❌ فقط ادمین")
-    videos = load_videos()
-    if not context.args:
-        return await update.message.reply_text("استفاده: /addvideo 123")
-    try:
-        vid = int(context.args[0])
-        if vid not in videos:
-            videos.append(vid)
-            save_videos(videos)
-            await update.message.reply_text("✅ اضافه شد")
-        else:
-            await update.message.reply_text("⚠️ قبلاً هست")
-    except:
-        await update.message.reply_text("❌ فقط عدد")
-
-async def add_adult_video(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.effective_user.id not in ADMIN_IDS:
-        return await update.message.reply_text("❌ فقط ادمین")
-    videos = load_adult_videos()
-    if not context.args:
-        return await update.message.reply_text("استفاده: /addadultvideo 123")
-    try:
-        vid = int(context.args[0])
-        if vid not in videos:
-            videos.append(vid)
-            save_adult_videos(videos)
-            await update.message.reply_text("✅ اضافه شد به بخش بزرگسالان")
-        else:
-            await update.message.reply_text("⚠️ قبلاً هست")
-    except:
-        await update.message.reply_text("❌ فقط عدد")
-
-async def add_adult_videos_bulk(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.effective_user.id not in ADMIN_IDS:
-        return await update.message.reply_text("❌ فقط ادمین")
-    if not context.args:
-        return await update.message.reply_text("استفاده: /addadultvideos 7 8 9 10")
-    videos = load_adult_videos()
-    added = []
-    exists = []
-    for arg in context.args:
-        try:
-            vid = int(arg)
-            if vid not in videos:
-                videos.append(vid)
-                added.append(vid)
-            else:
-                exists.append(vid)
-        except:
-            pass
-    save_adult_videos(videos)
-    text = f"✅ اضافه شد به بزرگسالان: {added}\n🔞 مجموع: {len(videos)} محتوا"
-    if exists:
-        text += f"\n⚠️ قبلاً بود: {exists}"
-    await update.message.reply_text(text)
-
-async def add_videos_bulk(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.effective_user.id not in ADMIN_IDS:
-        return await update.message.reply_text("❌ فقط ادمین")
-    if not context.args:
-        return await update.message.reply_text("استفاده: /addvideos 7 8 9 10")
-    videos = load_videos()
-    added = []
-    exists = []
-    for arg in context.args:
-        try:
-            vid = int(arg)
-            if vid not in videos:
-                videos.append(vid)
-                added.append(vid)
-            else:
-                exists.append(vid)
-        except:
-            pass
-    save_videos(videos)
-    text = f"✅ اضافه شد: {added}\n😈 مجموع: {len(videos)} محتوا"
-    if exists:
-        text += f"\n⚠️ قبلاً بود: {exists}"
-    await update.message.reply_text(text)
-
-async def remove_video(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.effective_user.id not in ADMIN_IDS:
-        return await update.message.reply_text("❌ فقط ادمین")
-    videos = load_videos()
-    if not context.args:
-        return await update.message.reply_text("استفاده: /removevideo 123")
-    try:
-        vid = int(context.args[0])
-        if vid in videos:
-            videos.remove(vid)
-            save_videos(videos)
-            await update.message.reply_text("🗑 حذف شد")
-        else:
-            await update.message.reply_text("⚠️ پیدا نشد")
-    except:
-        await update.message.reply_text("❌ فقط عدد")
-
-async def remove_adult_video(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.effective_user.id not in ADMIN_IDS:
-        return await update.message.reply_text("❌ فقط ادمین")
-    videos = load_adult_videos()
-    if not context.args:
-        return await update.message.reply_text("استفاده: /removeadultvideo 123")
-    try:
-        vid = int(context.args[0])
-        if vid in videos:
-            videos.remove(vid)
-            save_adult_videos(videos)
-            await update.message.reply_text("🗑 حذف شد از بخش بزرگسالان")
-        else:
-            await update.message.reply_text("⚠️ پیدا نشد")
-    except:
-        await update.message.reply_text("❌ فقط عدد")
-
-async def broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.effective_user.id not in ADMIN_IDS:
-        return await update.message.reply_text("❌ فقط ادمین")
-    user_states[update.effective_user.id] = "waiting_broadcast"
-    await update.message.reply_text("📢 پیامی که میخوای به همه بفرستی رو بنویس 👇")
+        logger.error(f"خطا در ارسال: {e}")
+        await context.bot.send_message(
+            chat_id=user_id,
+            text="❌ خطا در ارسال. دوباره امتحان کن."
+        )
 
 def main():
     app = Application.builder().token(BOT_TOKEN).build()
-
     app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("addvideo", add_video))
-    app.add_handler(CommandHandler("addvideos", add_videos_bulk))
-    app.add_handler(CommandHandler("removevideo", remove_video))
-    app.add_handler(CommandHandler("addadultvideo", add_adult_video))
-    app.add_handler(CommandHandler("addadultvideos", add_adult_videos_bulk))
-    app.add_handler(CommandHandler("removeadultvideo", remove_adult_video))
-    app.add_handler(CommandHandler("broadcast", broadcast))
-    app.add_handler(CommandHandler("reply", reply_anon))
-
-    app.add_handler(CallbackQueryHandler(check_join_callback, pattern="check_join"))
-    app.add_handler(CallbackQueryHandler(get_video_callback, pattern="get_video"))
-    app.add_handler(CallbackQueryHandler(get_adult_video_callback, pattern="get_adult_video"))
-    app.add_handler(CallbackQueryHandler(anon_msg_callback, pattern="anon_msg"))
-
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
-
+    app.add_handler(CallbackQueryHandler(check_join_callback, pattern="^checkjoin"))
+    app.add_handler(CallbackQueryHandler(support_callback, pattern="^support$"))
+    app.add_handler(CallbackQueryHandler(admin_channel_callback, pattern="^adminchan_"))
+    app.add_handler(MessageHandler(
+        filters.User(ADMIN_ID) & filters.TEXT & ~filters.COMMAND,
+        lambda u, c: handle_admin_caption(u, c) if admin_state.get(ADMIN_ID, {}).get("step") == "waiting_caption" else handle_message(u, c)
+    ))
+    app.add_handler(MessageHandler(
+        filters.User(ADMIN_ID) & (filters.VIDEO | filters.PHOTO | filters.Document.ALL | filters.FORWARDED),
+        handle_message
+    ))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND & ~filters.User(ADMIN_ID), handle_message))
     print("Bot running...")
     app.run_polling()
 
